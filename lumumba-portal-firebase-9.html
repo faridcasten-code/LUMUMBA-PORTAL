@@ -1,0 +1,1834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lumumba Secondary School — Digital Portal</title>
+
+<!-- Firebase (compat SDK — simplest for plain <script> usage, no build tools needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- Firebase Storage intentionally not included yet — everything below runs
+     on the free Firestore + Authentication tier only. Storage can be added
+     back later when ready to upgrade to the Blaze plan. -->
+<!-- Firebase Storage removed: it now requires the paid "Blaze" plan for new
+     projects. Photos are instead compressed and stored as text (base64)
+     directly inside Firestore documents, which stays on the free plan. -->
+
+<!-- React (no build tools needed — Babel transforms JSX right in the browser) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Segoe UI', Arial, sans-serif; }
+  h1,h2,h3 { font-family: Georgia, serif; margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  // ============================================================
+  // FIREBASE PROJECT CONFIG — Lumumba Secondary School
+  // ============================================================
+  const firebaseConfig = {
+    apiKey: "AIzaSyBxZwz-kGFzWAav-plsAfCJbLJ-kOlT6yI",
+    authDomain: "lumumba-digital-platform-hub.firebaseapp.com",
+    projectId: "lumumba-digital-platform-hub",
+    storageBucket: "lumumba-digital-platform-hub.firebasestorage.app",
+    messagingSenderId: "415350025625",
+    appId: "1:415350025625:web:c37952ce217c4204f7b708"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+/* ============================================================
+   LUMUMBA SECONDARY SCHOOL — DIGITAL PORTAL (Firebase edition)
+   Creator: FARID HAJI MOH'D — President, Student Government
+   ============================================================
+   Login identifier = Registration Number only (for now).
+   Internally this maps to a Firebase Auth "local" email:
+       regnumber@lumumba.local
+   Personal email/phone are stored as contact info, not used
+   to sign in yet (can be added later).
+   ============================================================ */
+
+const PALETTE = {
+  navy: "#14417A", navyDeep: "#0A2647", gold: "#FFFFFF",
+  ivory: "#F4F8FC", teal: "#1D6FA5", coral: "#C0392B",
+};
+const ADMIN_REG = "ADMIN-001";
+const ADMIN_PASS_HINT = "Set by whoever first registers using ADMIN-001 (see note below).";
+const FORMS = ["Form I", "Form II", "Form III", "Form IV", "Form V", "Form VI"];
+const O_LEVEL_FORMS = ["Form I", "Form II", "Form III", "Form IV"];
+const A_LEVEL_FORMS = ["Form V", "Form VI"];
+function levelOfForm(form) { return A_LEVEL_FORMS.includes(form) ? "A-Level" : "O-Level"; }
+// Periods per day: O-Level = 5 (Mon-Fri only). A-Level = 4 (every day, Mon-Sun);
+// teacher-presence is only tracked Mon-Fri — weekend entries log student attendance only.
+function periodsForDay(level, dayName) {
+  if (level === "O-Level") return (dayName === "Saturday" || dayName === "Sunday") ? 0 : 5;
+  return 4; // A-Level: same period count every day, including weekends
+}
+function isWeekday(dayName) { return dayName !== "Saturday" && dayName !== "Sunday"; }
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function dayNameOf(dateStr) { return DAY_NAMES[new Date(dateStr + "T00:00:00").getDay()]; }
+const AUTH_DOMAIN_SUFFIX = "@lumumba.local";
+
+const EXTERNAL_RESOURCES = [
+  { title: "Maktaba by TETEA", desc: "The largest free bank of NECTA past papers, notes & topical resources for all levels.", link: "https://maktaba.tetea.org" },
+  { title: "NECTA — National Examinations Council", desc: "Official exam results, timetables and circulars.", link: "https://www.necta.go.tz" },
+  { title: "TIE — Tanzania Institute of Education", desc: "Official body for the new competence-based curriculum & syllabuses.", link: "https://www.tie.go.tz" },
+  { title: "TIE Online School", desc: "Official TIE interactive lessons for secondary students, aligned to the new syllabus.", link: "https://opschool.tie.go.tz" },
+  { title: "TIE Digital Library", desc: "Official TIE e-library — textbooks and supplementary reading.", link: "https://ol.tie.go.tz" },
+  { title: "MoEZ — Ministry of Education, Zanzibar", desc: "Official Zanzibar ministry site — circulars, results and policy.", link: "https://moez.go.tz" },
+  { title: "Zanzibar Library Services (ZLSB) Past Papers", desc: "Official archive of NECTA/SMZ past papers for Form II, IV & VI.", link: "https://zlms.zls.go.tz/pastpapers.php" },
+  { title: "Waza Elimu", desc: "Past papers, results and study updates across Tanzanian exam boards.", link: "https://wazaelimu.com" },
+  { title: "PhET Interactive Simulations", desc: "Free interactive Physics, Chemistry, Biology & Maths simulations (University of Colorado).", link: "https://phet.colorado.edu" },
+];
+
+const ALUMNI_RESOURCES = {
+  loans: [
+    { title: "HESLB — Higher Education Students' Loans Board (Tanzania Bara)", desc: "Official student loan applications, status checks and repayment for Mainland Tanzania.", link: "https://www.heslb.go.tz" },
+    { title: "ZHESLB — Zanzibar Higher Education Students' Loans Board", desc: "Official student loans for Zanzibaris via the ZOLAS portal.", link: "https://www.zhelb.go.tz" },
+    { title: "ZOLAS — Zanzibar Online Loan Application System", desc: "Direct portal to apply for and manage a Zanzibar higher education loan.", link: "https://zolas.zheslb.go.tz/zolas/authentication/login" },
+  ],
+  scholarships: [
+    { title: "Mastercard Foundation Scholars Program", desc: "Full scholarships for African students at partner universities.", link: "https://mastercardfdn.org/en/what-we-do/all-programs/mastercard-foundation-scholars-program/" },
+    { title: "DAAD Scholarships (Germany)", desc: "German government scholarships for study and research in Germany.", link: "https://www.daad.de/en/study-and-research-in-germany/scholarships/" },
+    { title: "Chevening Scholarships (UK)", desc: "UK government scholarships for future leaders to study a Master's in the UK.", link: "https://www.chevening.org" },
+    { title: "Commonwealth Scholarships", desc: "Scholarships for Commonwealth citizens, including Tanzania, for study in the UK.", link: "https://cscuk.fcdo.gov.uk" },
+    { title: "MoEST Scholarships Portal (Tanzania)", desc: "Government-listed scholarship opportunities for Tanzanian students.", link: "https://www.moe.go.tz" },
+  ],
+  universities: [
+    { title: "TCU — Tanzania Commission for Universities (Admissions)", desc: "Official central admission system for undergraduate placement in Tanzanian universities.", link: "https://tcu.go.tz" },
+    { title: "State University of Zanzibar (SUZA)", desc: "Zanzibar's public university — programmes and admissions.", link: "https://www.suza.ac.tz" },
+    { title: "University of Dodoma (UDOM)", desc: "One of Tanzania's largest public universities.", link: "https://www.udom.ac.tz" },
+    { title: "University of Dar es Salaam (UDSM)", desc: "Tanzania's oldest and largest public university.", link: "https://www.udsm.ac.tz" },
+  ],
+};
+
+const TEMPLATE_KINDS = {
+  lesson: {
+    label: "Lesson Plan",
+    fields: [
+      { k: "school", l: "School" }, { k: "subject", l: "Subject" }, { k: "form", l: "Class/Form" },
+      { k: "date", l: "Date", type: "date" }, { k: "topic", l: "Main Topic" }, { k: "subtopic", l: "Sub Topic" },
+      { k: "competence", l: "Specific Competence(s)" }, { k: "materials", l: "Teaching/Learning materials" },
+      { k: "references", l: "References" },
+      { k: "introduction", l: "1. Introduction (arouse interest, prior knowledge)", area: true },
+      { k: "development", l: "2. Competence Development (main activities)", area: true },
+      { k: "design", l: "3. Design (learners apply/practice)", area: true },
+      { k: "realisation", l: "4. Realisation (conclusion, assessment, homework)", area: true },
+    ],
+  },
+  scheme: {
+    label: "Scheme of Work",
+    fields: [
+      { k: "school", l: "School" }, { k: "subject", l: "Subject" }, { k: "form", l: "Class/Form" }, { k: "term", l: "Term/Year" },
+      { k: "week", l: "Week" }, { k: "period", l: "Period(s)" }, { k: "topic", l: "Topic / Sub-topic" },
+      { k: "competences", l: "Competences", area: true }, { k: "activities", l: "Teaching/Learning activities", area: true },
+      { k: "materials", l: "T/L materials" }, { k: "assessment", l: "Assessment method" }, { k: "remarks", l: "Remarks" },
+    ],
+  },
+  assessment: {
+    label: "Assessment",
+    fields: [
+      { k: "school", l: "School" }, { k: "subject", l: "Subject" }, { k: "form", l: "Class/Form" }, { k: "date", l: "Date", type: "date" },
+      { k: "topic", l: "Topic Covered" }, { k: "type", l: "Type (Formative/Summative)" },
+      { k: "instructions", l: "Instructions to Students", area: true },
+      { k: "items", l: "Assessment Items / Questions", area: true },
+      { k: "markingScheme", l: "Marking Scheme", area: true },
+    ],
+  },
+  daily: {
+    label: "Daily Record of Work",
+    fields: [
+      { k: "school", l: "School" }, { k: "teacher", l: "Teacher's Name" }, { k: "date", l: "Date", type: "date" },
+      { k: "form", l: "Class/Form" }, { k: "subject", l: "Subject" }, { k: "period", l: "Period" },
+      { k: "topic", l: "Topic Taught" }, { k: "workCovered", l: "Work Covered", area: true },
+      { k: "remarks", l: "Remarks / Follow-up", area: true },
+    ],
+  },
+};
+
+
+function todayKey() { return new Date().toISOString().slice(0, 10); }
+function weekKey() {
+  const d = new Date(); const onejan = new Date(d.getFullYear(), 0, 1);
+  const week = Math.ceil((((d - onejan) / 86400000) + onejan.getDay() + 1) / 7);
+  return `${d.getFullYear()}-W${week}`;
+}
+function regToAuthEmail(reg) { return `${slugify(reg)}${AUTH_DOMAIN_SUFFIX}`; }
+
+// Returns a small base64 JPEG string (data URL) — stored directly as text
+// inside a Firestore document field, avoiding the need for Firebase Storage.
+function compressImage(file, maxSize = 160, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } }
+        else { if (height > maxSize) { width *= maxSize / height; height = maxSize; } }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ---------- Tiny inline icon set (emoji-based, no external deps) ---------- */
+const I = {
+  user: "👤", lock: "🔒", mail: "✉️", phone: "📞", hash: "#️⃣", upload: "⬆️",
+  book: "📖", file: "📄", video: "🎥", cap: "🎓", trophy: "🏆", home: "🏠",
+  shield: "🛡️", logout: "🚪", check: "✔️", x: "✖️", plus: "➕", trash: "🗑️",
+  award: "🏅", library: "📚", clipboard: "📋", info: "ℹ️", menu: "☰",
+  chevron: "›", star: "⭐", link: "🔗", roster: "🗂️", megaphone: "📢",
+};
+function Ic({ n, size = 15 }) { return <span style={{ fontSize: size, lineHeight: 1 }}>{I[n] || ""}</span>; }
+
+function Seal({ size = 44 }) {
+  return (
+    <img src="lumumba-logo.jpg" alt="Lumumba Secondary School crest" style={{
+      width: size, height: size, borderRadius: "50%", objectFit: "cover",
+      boxShadow: "0 2px 6px rgba(10,38,71,0.35), inset 0 0 0 2px rgba(20,65,122,0.25)",
+      flexShrink: 0, background: "#fff",
+    }} onError={(e) => { e.target.style.display = "none"; }} />
+  );
+}
+function Field({ icon, ...props }) {
+  return (
+    <div style={{ position: "relative", marginBottom: 14 }}>
+      {icon && <span style={{ position: "absolute", left: 12, top: 12, color: "#8a94a6" }}><Ic n={icon} size={14} /></span>}
+      <input {...props} style={{ width: "100%", boxSizing: "border-box", padding: icon ? "12px 12px 12px 34px" : "12px", borderRadius: 8, border: "1px solid #d9dde4", fontSize: 14.5, outline: "none", fontFamily: "inherit", background: "#fff", color: PALETTE.navyDeep, ...(props.style || {}) }} />
+    </div>
+  );
+}
+function Button({ children, variant = "primary", style, ...props }) {
+  const base = { padding: "11px 18px", borderRadius: 8, border: "none", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 };
+  const variants = {
+    primary: { background: PALETTE.navy, color: "#fff" },
+    gold: { background: PALETTE.gold, color: PALETTE.navyDeep, border: `1.5px solid ${PALETTE.navy}` },
+    ghost: { background: "transparent", color: PALETTE.navy, border: `1px solid ${PALETTE.navy}` },
+    danger: { background: "#fff", color: PALETTE.coral, border: `1px solid ${PALETTE.coral}` },
+    teal: { background: PALETTE.teal, color: "#fff" },
+  };
+  return <button {...props} style={{ ...base, ...variants[variant], ...style }} onMouseEnter={e => e.currentTarget.style.opacity = 0.85} onMouseLeave={e => e.currentTarget.style.opacity = 1}>{children}</button>;
+}
+function Badge({ children, tone = "gold" }) {
+  const tones = { gold: { bg: "#dbe9fa", fg: PALETTE.navy }, teal: { bg: "#dbeaf5", fg: "#124a72" }, coral: { bg: "#f6dedb", fg: "#8f2f27" }, navy: { bg: "#e2e7ee", fg: PALETTE.navy } };
+  const t = tones[tone];
+  return <span style={{ background: t.bg, color: t.fg, fontSize: 11.5, fontWeight: 700, padding: "3px 9px", borderRadius: 20, letterSpacing: 0.3, textTransform: "uppercase" }}>{children}</span>;
+}
+function Card({ children, style }) {
+  return <div style={{ background: "#fff", borderRadius: 14, padding: 20, boxShadow: "0 1px 3px rgba(19,42,70,0.08), 0 1px 2px rgba(19,42,70,0.06)", border: "1px solid #eef0f3", ...style }}>{children}</div>;
+}
+
+/* ============================================================ */
+function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [fbUser, setFbUser] = useState(null);
+  const [profile, setProfile] = useState(null); // Firestore user doc
+  const [library, setLibrary] = useState({ notes: [], pastpapers: [], books: [], videos: [], exams: [] });
+  const [quizzes, setQuizzes] = useState([]);
+  const [leaderboard, setLeaderboard] = useState({});
+  const [announcements, setAnnouncements] = useState([]);
+  const [schoolInfo, setSchoolInfo] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [monitorForm, setMonitorForm] = useState(null); // set if this student is a Class Monitor for a Form
+
+  const [page, setPage] = useState("home");
+  const [authMode, setAuthMode] = useState("login");
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Watch Firebase Auth state
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(async (u) => {
+      setFbUser(u);
+      try {
+        if (u) {
+          const doc = await db.collection("users").doc(u.uid).get();
+          const prof = doc.exists ? { id: u.uid, ...doc.data() } : null;
+          setProfile(prof);
+          if (prof && prof.role === "student") {
+            const monSnap = await db.collection("classMonitors").where("studentId", "==", u.uid).limit(1).get();
+            setMonitorForm(monSnap.empty ? null : monSnap.docs[0].data().form);
+          } else {
+            setMonitorForm(null);
+          }
+        } else {
+          setProfile(null);
+          setMonitorForm(null);
+        }
+      } catch (err) {
+        setLoadError("Could not read your account (" + err.code + "): " + err.message);
+      }
+      setAuthReady(true);
+    });
+    return unsub;
+  }, []);
+
+  // Load shared collections once
+  useEffect(() => {
+    (async () => {
+      try {
+        const libDoc = await db.collection("library").doc("content").get();
+        setLibrary(libDoc.exists ? libDoc.data() : { notes: [], pastpapers: [], books: [], videos: [], exams: [] });
+
+        const qSnap = await db.collection("quizzes").orderBy("date", "desc").get();
+        setQuizzes(qSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        const lbSnap = await db.collection("leaderboard").get();
+        const lb = {}; lbSnap.docs.forEach(d => lb[d.id] = d.data());
+        setLeaderboard(lb);
+
+        const annSnap = await db.collection("announcements").orderBy("date", "desc").get();
+        setAnnouncements(annSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        const infoDoc = await db.collection("meta").doc("schoolInfo").get();
+        if (infoDoc.exists) setSchoolInfo(infoDoc.data());
+        else {
+          const info = {
+            about: "Lumumba Secondary School is one of the largest secondary schools in Zanzibar, located in Saateni, close to Stone Town. Its motto is \"Committed to excellence in both academic and moral achievements,\" and it offers Form I through Form VI.",
+            history: "The school was founded in 1958 as King George VI College. After the 1964 Zanzibar Revolution it was renamed Lumumba College in honour of Congolese leader Patrice Lumumba, and later became Lumumba Secondary School as it is known today.",
+            contacts: "Address: Saateni St, Lumumba, Zanzibar | Email: info@lumumba.ac.tz | Phone: +255 654 797 531",
+          };
+          await db.collection("meta").doc("schoolInfo").set(info);
+          setSchoolInfo(info);
+        }
+      } catch (err) {
+        setLoadError("Could not connect to the database (" + (err.code || "unknown") + "): " + err.message);
+      }
+    })();
+  }, []);
+
+  const refreshLibrary = useCallback(async () => {
+    const d = await db.collection("library").doc("content").get();
+    setLibrary(d.exists ? d.data() : { notes: [], pastpapers: [], books: [], videos: [], exams: [] });
+  }, []);
+  const refreshQuizzes = useCallback(async () => {
+    const s = await db.collection("quizzes").orderBy("date", "desc").get();
+    setQuizzes(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, []);
+  const refreshLeaderboard = useCallback(async () => {
+    const s = await db.collection("leaderboard").get();
+    const lb = {}; s.docs.forEach(d => lb[d.id] = d.data());
+    setLeaderboard(lb);
+  }, []);
+  const refreshAnnouncements = useCallback(async () => {
+    const s = await db.collection("announcements").orderBy("date", "desc").get();
+    setAnnouncements(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, []);
+  const refreshProfile = useCallback(async () => {
+    if (!fbUser) return;
+    const d = await db.collection("users").doc(fbUser.uid).get();
+    setProfile(d.exists ? { id: fbUser.uid, ...d.data() } : null);
+  }, [fbUser]);
+
+  function goto(p) { setPage(p); setNavOpen(false); }
+  function logout() { auth.signOut(); setPage("home"); }
+
+  if (!authReady || !schoolInfo) {
+    return (
+      <div style={{ minHeight: "100vh", background: PALETTE.navyDeep, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, fontFamily: "Georgia, serif", padding: 24, textAlign: "center" }}>
+        {loadError ? (
+          <>
+            <div style={{ fontSize: 40 }}>⚠️</div>
+            <div style={{ color: "#fff", fontSize: 15, maxWidth: 480 }}>Could not load the portal.</div>
+            <div style={{ color: "#f6c7c2", fontSize: 13, maxWidth: 480, fontFamily: "monospace", background: "rgba(0,0,0,0.25)", padding: 12, borderRadius: 8 }}>{loadError}</div>
+            <div style={{ color: "#c6cedb", fontSize: 12.5, maxWidth: 480, marginTop: 8 }}>
+              This usually means the Firestore Security Rules haven't been published yet, or the config doesn't match your Firebase project. Check the Rules tab in the Firebase console, then reload this page.
+            </div>
+            <Button variant="gold" onClick={() => window.location.reload()} style={{ marginTop: 10 }}>Reload</Button>
+          </>
+        ) : (
+          <>
+            <Seal size={64} /><div style={{ color: "#fff", letterSpacing: 1 }}>Loading Lumumba Portal...</div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  const session = fbUser && profile ? profile : null;
+
+  return (
+    <div style={{ minHeight: "100vh", background: PALETTE.ivory, fontFamily: "'Work Sans','Segoe UI',sans-serif", color: PALETTE.navyDeep }}>
+      <TopBar session={session} monitorForm={monitorForm} onNav={goto} onLogout={logout} navOpen={navOpen} setNavOpen={setNavOpen} />
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "28px 18px 60px" }}>
+        {page === "home" && <HomePage session={session} goto={goto} announcements={announcements} leaderboard={leaderboard} />}
+        {page === "auth" && <AuthPage mode={authMode} setMode={setAuthMode} onLoggedIn={() => setPage("dashboard")} />}
+        {page === "dashboard" && session && <Dashboard session={session} refreshProfile={refreshProfile} leaderboard={leaderboard} />}
+        {page === "dashboard" && !session && <AuthPage mode="login" setMode={setAuthMode} onLoggedIn={() => setPage("dashboard")} />}
+        {page === "library" && <LibraryPage session={session} library={library} refresh={refreshLibrary} />}
+        {page === "news" && <AnnouncementsPage session={session} announcements={announcements} refresh={refreshAnnouncements} />}
+        {page === "quiz" && <QuizPage session={session} quizzes={quizzes} leaderboard={leaderboard} refreshQuizzes={refreshQuizzes} refreshLeaderboard={refreshLeaderboard} />}
+        {page === "alumni" && <AlumniPage />}
+        {page === "projects" && <ProjectsPage session={session} />}
+        {page === "toolkit" && session && session.role !== "student" && <TeacherToolkitPage session={session} />}
+        {page === "suggestions" && session && <SuggestionsPage session={session} />}
+        {page === "attendance" && session && (session.role === "admin" || monitorForm) && <AttendancePage session={session} monitorForm={monitorForm} />}
+        {page === "polls" && session && <PollsPage session={session} />}
+        {page === "about" && <AboutPage info={schoolInfo} />}
+        {page === "admin" && session?.role === "admin" && <AdminPage session={session} schoolInfo={schoolInfo} setSchoolInfo={setSchoolInfo} />}
+      </div>
+      <footer style={{ textAlign: "center", padding: "22px 16px 34px", color: "#7c8698", fontSize: 12.5, borderTop: "1px solid #e2e7ee" }}>
+        Lumumba Secondary School — Digital Portal &nbsp;•&nbsp; Created by <strong>FARID HAJI MOH'D</strong>, President of the Student Government
+      </footer>
+    </div>
+  );
+}
+
+/* ---------------- Top Bar ---------------- */
+function TopBar({ session, monitorForm, onNav, onLogout, navOpen, setNavOpen }) {
+  const items = [
+    { key: "home", label: "Home", icon: "home" },
+    { key: "news", label: "News & Events", icon: "megaphone" },
+    { key: "library", label: "Library", icon: "library" },
+    { key: "quiz", label: "Quizzes", icon: "clipboard" },
+    { key: "alumni", label: "Alumni & Scholarships", icon: "cap" },
+    { key: "projects", label: "Projects", icon: "star" },
+    ...(session ? [{ key: "polls", label: "Polls", icon: "check" }] : []),
+    { key: "about", label: "About School", icon: "info" },
+    ...(session ? [{ key: "dashboard", label: "Dashboard", icon: "user" }] : []),
+    ...(session && session.role !== "student" ? [{ key: "toolkit", label: "Teacher Toolkit", icon: "file" }] : []),
+    ...(session && (session.role === "admin" || monitorForm) ? [{ key: "attendance", label: "Attendance Log", icon: "clipboard" }] : []),
+    ...(session ? [{ key: "suggestions", label: "Suggestion Box", icon: "mail" }] : []),
+    ...(session?.role === "admin" ? [{ key: "admin", label: "Admin", icon: "shield" }] : []),
+  ];
+  return (
+    <div style={{ background: PALETTE.navyDeep, color: "#fff", position: "sticky", top: 0, zIndex: 20 }}>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "12px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }} onClick={() => onNav("home")}>
+          <div>
+            <div style={{ fontFamily: "Georgia,serif", fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Lumumba Secondary</div>
+            <div style={{ fontSize: 10.5, letterSpacing: 1.5, color: "#cfe3f7", textTransform: "uppercase" }}>Digital Portal</div>
+          </div>
+        </div>
+        <div className="desktop-nav" style={{ display: "none", gap: 6, alignItems: "center" }}>
+          {items.map(it => (
+            <button key={it.key} onClick={() => onNav(it.key)} style={{ background: "transparent", border: "none", color: "#d7dde6", cursor: "pointer", fontSize: 13.5, padding: "8px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 6 }}><Ic n={it.icon} /> {it.label}</button>
+          ))}
+          {session ? <Button variant="gold" onClick={onLogout} style={{ marginLeft: 6, padding: "8px 14px" }}><Ic n="logout" /> Logout</Button>
+            : <Button variant="gold" onClick={() => onNav("auth")} style={{ marginLeft: 6, padding: "8px 14px" }}>Login / Register</Button>}
+        </div>
+        <button onClick={() => setNavOpen(!navOpen)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer" }}><Ic n="menu" size={22} /></button>
+      </div>
+      {navOpen && (
+        <div style={{ background: PALETTE.navy, padding: "8px 18px 16px", display: "flex", flexDirection: "column", gap: 4 }}>
+          {items.map(it => (
+            <button key={it.key} onClick={() => onNav(it.key)} style={{ background: "transparent", border: "none", color: "#e9ecf1", textAlign: "left", cursor: "pointer", fontSize: 14.5, padding: "10px 6px", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(255,255,255,0.08)" }}><Ic n={it.icon} /> {it.label}</button>
+          ))}
+          {session ? <Button variant="gold" onClick={onLogout} style={{ marginTop: 8 }}><Ic n="logout" /> Logout</Button>
+            : <Button variant="gold" onClick={() => onNav("auth")} style={{ marginTop: 8 }}>Login / Register</Button>}
+        </div>
+      )}
+      <style>{`@media (min-width: 860px){ .desktop-nav{ display:flex !important; } }`}</style>
+    </div>
+  );
+}
+
+/* ---------------- Home ---------------- */
+function HomePage({ session, goto, announcements, leaderboard }) {
+  const top = Object.entries(leaderboard).map(([id, v]) => ({ id, ...v })).sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0)).slice(0, 5);
+  const latestAnn = (announcements || []).slice(0, 3);
+  return (
+    <div>
+      <div style={{ background: `linear-gradient(120deg, rgba(20,65,122,0.88), rgba(10,38,71,0.94)), url('lumumba-building.jpg')`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: 18, padding: "44px 30px", color: "#fff", position: "relative", overflow: "hidden", marginBottom: 24 }}>
+        <div style={{ position: "absolute", right: -40, top: -40, width: 220, height: 220, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,255,255,0.18), transparent 70%)" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
+          <Seal size={56} />
+          <div>
+            <div style={{ fontFamily: "Georgia,serif", fontSize: 20, fontWeight: 700, lineHeight: 1.1, color: "#fff" }}>Lumumba Secondary School</div>
+            <div style={{ fontSize: 11, letterSpacing: 1.5, color: "#cfe3f7", textTransform: "uppercase" }}>Digital Portal</div>
+          </div>
+        </div>
+        <Badge tone="gold">Official • Lumumba Secondary School</Badge>
+        <h1 style={{ fontSize: 32, marginTop: 14, maxWidth: 560, lineHeight: 1.25 }}>Everything academic, in one place — results, notes, exams and more.</h1>
+        <p style={{ color: "#c6cedb", maxWidth: 520, marginTop: 12, fontSize: 15 }}>This portal connects Lumumba Secondary's students and teachers in one secure place — every person with their own account, their own information, and their own progress.</p>
+        <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
+          {!session && <Button variant="gold" onClick={() => goto("auth")}>Register now <Ic n="chevron" /></Button>}
+          <Button variant="ghost" onClick={() => goto("library")} style={{ color: "#fff", borderColor: "rgba(255,255,255,0.4)" }}>Browse Library</Button>
+        </div>
+      </div>
+
+      {latestAnn.length > 0 && (
+        <Card style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}><Ic n="megaphone" size={17} /><h3 style={{ fontSize: 16 }}>Latest News & Events</h3></div>
+            <button onClick={() => goto("news")} style={{ background: "none", border: "none", color: PALETTE.navy, cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}>See all →</button>
+          </div>
+          <div style={{ display: "grid", gap: 10 }}>
+            {latestAnn.map((a, i) => (
+              <div key={a.id || i} style={{ display: "flex", gap: 10, paddingBottom: i < latestAnn.length - 1 ? 10 : 0, borderBottom: i < latestAnn.length - 1 ? "1px solid #f1efe8" : "none" }}>
+                <Badge tone={a.category === "event" ? "teal" : "navy"}>{a.category === "event" ? "Event" : "News"}</Badge>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>{a.title}</div>
+                  <div style={{ fontSize: 12, color: "#8a94a6", marginTop: 2 }}>{a.category === "event" && a.eventDate ? `${a.eventDate} • ` : ""}{a.date ? new Date(a.date).toLocaleDateString() : ""}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 14, marginBottom: 24 }}>
+        {[
+          { icon: "file", title: "Past Papers & Exams", desc: "Past exam papers and practice exams for every subject." },
+          { icon: "book", title: "Notes & Books", desc: "Study notes and textbooks for every Form." },
+          { icon: "video", title: "Video Lessons", desc: "Video lessons uploaded by teachers." },
+          { icon: "trophy", title: "Quizzes & Rewards", desc: "Test yourself, earn points, climb the Top 10." },
+        ].map((f, i) => (
+          <Card key={i}><Ic n={f.icon} size={22} /><h3 style={{ fontSize: 15.5, marginTop: 10 }}>{f.title}</h3><p style={{ fontSize: 13, color: "#67707f", marginTop: 6 }}>{f.desc}</p></Card>
+        ))}
+      </div>
+
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><Ic n="trophy" size={18} /><h3 style={{ fontSize: 16 }}>Top 5 — This Week</h3></div>
+        {top.length === 0 ? <p style={{ color: "#8a94a6", fontSize: 13.5 }}>No quiz scores yet. Try a quiz to appear here!</p> : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {top.map((u, i) => (
+              <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: i < top.length - 1 ? "1px solid #f1efe8" : "none" }}>
+                <div style={{ width: 24, height: 24, borderRadius: "50%", background: i === 0 ? PALETTE.navy : "#eee", color: i === 0 ? "#fff" : "#888", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{i + 1}</div>
+                <div style={{ flex: 1, fontSize: 14 }}>{u.name}</div>
+                <Badge tone="teal">{u.totalPoints || 0} pts</Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Auth ---------------- */
+function AuthPage({ mode, setMode, onLoggedIn }) {
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [loginReg, setLoginReg] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+
+  const [role, setRole] = useState("student");
+  const [fullName, setFullName] = useState("");
+  const [regNumber, setRegNumber] = useState("");
+  const [form, setForm] = useState("Form I");
+  const [dob, setDob] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [pass1, setPass1] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [photoData, setPhotoData] = useState(null); // base64 data URL
+  const fileRef = useRef();
+
+  async function handlePhoto(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const dataUrl = await compressImage(f);
+    setPhotoData(dataUrl);
+  }
+
+  async function handleLogin() {
+    setMsg(null);
+    if (!loginReg || !loginPass) { setMsg({ t: "err", m: "Enter your registration number and password." }); return; }
+    setLoading(true);
+    try {
+      const authEmail = regToAuthEmail(loginReg);
+      const cred = await auth.signInWithEmailAndPassword(authEmail, loginPass);
+      const doc = await db.collection("users").doc(cred.user.uid).get();
+      if (!doc.exists) { setMsg({ t: "err", m: "Account record not found. Contact the admin." }); setLoading(false); return; }
+      const data = doc.data();
+      if (data.status === "pending") { setMsg({ t: "err", m: "Your account is still awaiting approval from the Super Admin." }); await auth.signOut(); setLoading(false); return; }
+      if (data.status === "rejected") { setMsg({ t: "err", m: "Your account was not approved. Contact the admin." }); await auth.signOut(); setLoading(false); return; }
+      onLoggedIn();
+    } catch (err) {
+      if (err.code === "auth/user-not-found" || err.code === "auth/invalid-credential" || err.code === "auth/invalid-login-credentials") setMsg({ t: "err", m: "Account not found. Check your registration number or register." });
+      else if (err.code === "auth/wrong-password") setMsg({ t: "err", m: "Incorrect password." });
+      else setMsg({ t: "err", m: "Login failed: " + err.message });
+    }
+    setLoading(false);
+  }
+
+  async function handleRegister() {
+    setMsg(null);
+    if (!fullName || !regNumber || !dob || !pass1) { setMsg({ t: "err", m: "Fill in full name, date of birth, registration number and password." }); return; }
+    if (pass1.length < 6) { setMsg({ t: "err", m: "Password should be at least 6 characters." }); return; }
+    if (pass1 !== pass2) { setMsg({ t: "err", m: "Passwords do not match." }); return; }
+    setLoading(true);
+    try {
+      // Roster check (only enforced once the admin has uploaded a roster)
+      const rosterSnap = await db.collection("roster").where("regNumber", "==", regNumber.trim()).where("role", "==", role).limit(1).get();
+      const anyRoster = await db.collection("roster").limit(1).get();
+      if (!anyRoster.empty && rosterSnap.empty) {
+        setMsg({ t: "err", m: "This registration number was not found on the official school roster. Contact the Super Admin if this is an error." });
+        setLoading(false); return;
+      }
+
+      const authEmail = regToAuthEmail(regNumber);
+      const isAdminSeed = regNumber.trim().toUpperCase() === ADMIN_REG;
+      const cred = await auth.createUserWithEmailAndPassword(authEmail, pass1);
+
+      await db.collection("users").doc(cred.user.uid).set({
+        fullName: fullName.trim(), regNumber: regNumber.trim(),
+        role: isAdminSeed ? "admin" : role,
+        form: role === "student" ? form : "Teacher",
+        level: role === "student" ? levelOfForm(form) : null, dob,
+        email: email.trim(), phone: phone.trim(),
+        photoURL: photoData || null, status: isAdminSeed ? "approved" : "pending",
+        schoolEmail: null, createdAt: Date.now(),
+      });
+
+      if (isAdminSeed) {
+        setMsg({ t: "ok", m: "Super Admin account created and approved automatically. You can log in now." });
+      } else {
+        setMsg({ t: "ok", m: "Registered! Your account is awaiting approval from the Super Admin. You'll be able to log in once approved." });
+      }
+      await auth.signOut();
+      setFullName(""); setRegNumber(""); setDob(""); setEmail(""); setPhone(""); setPass1(""); setPass2(""); setPhotoData(null);
+      if (fileRef.current) fileRef.current.value = "";
+      setMode("login");
+    } catch (err) {
+      if (err.code === "auth/email-already-in-use") setMsg({ t: "err", m: "This registration number is already registered." });
+      else setMsg({ t: "err", m: "Registration failed: " + err.message });
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div style={{ maxWidth: 460, margin: "0 auto" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, background: "#e2e7ee", padding: 4, borderRadius: 10 }}>
+        <button onClick={() => { setMode("login"); setMsg(null); }} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13.5, background: mode === "login" ? "#fff" : "transparent", color: PALETTE.navy }}>Login</button>
+        <button onClick={() => { setMode("register"); setMsg(null); }} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13.5, background: mode === "register" ? "#fff" : "transparent", color: PALETTE.navy }}>Register</button>
+      </div>
+
+      {msg && <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 14, fontSize: 13.5, background: msg.t === "ok" ? "#dbeaf5" : "#f6dedb", color: msg.t === "ok" ? "#124a72" : "#8f2f27" }}>{msg.m}</div>}
+
+      {mode === "login" ? (
+        <Card>
+          <h2 style={{ fontSize: 19, marginBottom: 4 }}>Welcome back</h2>
+          <p style={{ fontSize: 12.5, color: "#8a94a6", marginBottom: 16 }}>Sign in with your registration number.</p>
+          <Field icon="hash" placeholder="Registration number" value={loginReg} onChange={e => setLoginReg(e.target.value)} />
+          <Field icon="lock" type="password" placeholder="Password" value={loginPass} onChange={e => setLoginPass(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
+          <Button onClick={handleLogin} variant="primary" style={{ width: "100%" }} disabled={loading}>{loading ? "Logging in..." : "Login"}</Button>
+        </Card>
+      ) : (
+        <Card>
+          <h2 style={{ fontSize: 19, marginBottom: 4 }}>Create a New Account</h2>
+          <p style={{ fontSize: 12.5, color: "#8a94a6", marginBottom: 16 }}>Registering with <strong>{ADMIN_REG}</strong> as the registration number creates the Super Admin account automatically (first time only). Everyone else awaits approval.</p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            {[["student", "Student"], ["teacher", "Teacher"]].map(([v, l]) => (
+              <button type="button" key={v} onClick={() => setRole(v)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, border: `1.5px solid ${role === v ? PALETTE.navy : "#dde1e7"}`, background: role === v ? PALETTE.navy : "#fff", color: role === v ? "#fff" : PALETTE.navy }}>{l}</button>
+            ))}
+          </div>
+          <Field icon="user" placeholder="Full name" value={fullName} onChange={e => setFullName(e.target.value)} />
+          <Field icon="hash" placeholder={role === "student" ? "Registration number" : "Employee number"} value={regNumber} onChange={e => setRegNumber(e.target.value)} />
+          {role === "student" && (
+            <div style={{ marginBottom: 14 }}>
+              <select value={form} onChange={e => setForm(e.target.value)} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", fontFamily: "inherit", fontSize: 14.5 }}>
+                {FORMS.map(f => <option key={f}>{f}</option>)}
+              </select>
+              <div style={{ fontSize: 11.5, color: "#8a94a6", marginTop: 6 }}>Level: <strong>{levelOfForm(form)}</strong></div>
+            </div>
+          )}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, color: "#67707f", display: "block", marginBottom: 6 }}>Date of birth</label>
+            <input type="date" value={dob} onChange={e => setDob(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", fontSize: 14.5, fontFamily: "inherit" }} />
+          </div>
+          <Field icon="mail" type="email" placeholder="Personal email (optional)" value={email} onChange={e => setEmail(e.target.value)} />
+          <Field icon="phone" placeholder="Phone number" value={phone} onChange={e => setPhone(e.target.value)} />
+          <Field icon="lock" type="password" placeholder="Create password" value={pass1} onChange={e => setPass1(e.target.value)} />
+          <Field icon="lock" type="password" placeholder="Confirm password" value={pass2} onChange={e => setPass2(e.target.value)} />
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12.5, color: "#67707f", display: "block", marginBottom: 6 }}>Passport-size photo (optional now)</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {photoData && <img src={photoData} alt="passport" style={{ width: 52, height: 52, borderRadius: 8, objectFit: "cover", border: "1px solid #ddd" }} />}
+              <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} style={{ fontSize: 12.5 }} />
+            </div>
+          </div>
+          <Button onClick={handleRegister} variant="primary" style={{ width: "100%" }} disabled={loading}>{loading ? "Submitting..." : "Register"}</Button>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Dashboard ---------------- */
+function Dashboard({ session, refreshProfile, leaderboard }) {
+  const [results, setResults] = useState([]);
+  const fileRef = useRef();
+
+  useEffect(() => {
+    (async () => {
+      const d = await db.collection("results").doc(session.id).get();
+      setResults(d.exists ? (d.data().items || []) : []);
+    })();
+  }, [session.id]);
+
+  async function updatePhoto(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const dataUrl = await compressImage(f);
+    await db.collection("users").doc(session.id).update({ photoURL: dataUrl });
+    await refreshProfile();
+  }
+
+  const myScore = leaderboard[session.id];
+
+  return (
+    <div>
+      <Card style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 20 }}>
+        <div style={{ position: "relative" }}>
+          <div style={{ width: 84, height: 84, borderRadius: "50%", overflow: "hidden", background: "#eee", border: `3px solid ${PALETTE.navy}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {session.photoURL ? <img src={session.photoURL} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Ic n="user" size={30} />}
+          </div>
+          <button onClick={() => fileRef.current.click()} style={{ position: "absolute", bottom: -2, right: -2, width: 26, height: 26, borderRadius: "50%", background: PALETTE.navy, border: "2px solid #fff", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Ic n="upload" size={11} /></button>
+          <input ref={fileRef} type="file" accept="image/*" onChange={updatePhoto} style={{ display: "none" }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <h2 style={{ fontSize: 20 }}>{session.fullName}</h2>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+            <Badge tone="navy">{session.role === "student" ? session.form : "Teacher"}</Badge>
+            <Badge tone="teal">{session.regNumber}</Badge>
+          </div>
+        </div>
+        {session.role === "student" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 26, fontWeight: 700, color: PALETTE.navy }}>{myScore?.totalPoints || 0}</div>
+            <div style={{ fontSize: 11, color: "#8a94a6" }}>QUIZ POINTS</div>
+          </div>
+        )}
+      </Card>
+
+      {session.role === "student" && (
+        <Card>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><Ic n="award" size={16} /><h3 style={{ fontSize: 16 }}>My Results</h3></div>
+          {results.length === 0 ? <p style={{ fontSize: 13.5, color: "#8a94a6" }}>No results yet. When the admin posts them, they'll appear here — visible only to you.</p> : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead><tr style={{ textAlign: "left", color: "#8a94a6", fontSize: 11.5, textTransform: "uppercase" }}><th style={{ padding: "6px 4px" }}>Subject</th><th>Marks</th><th>Grade</th><th>Term</th></tr></thead>
+              <tbody>
+                {results.map((r, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid #f1efe8" }}>
+                    <td style={{ padding: "8px 4px" }}>{r.subject}</td><td>{r.marks}</td>
+                    <td><Badge tone={r.grade === "A" ? "teal" : r.grade === "F" ? "coral" : "gold"}>{r.grade}</Badge></td>
+                    <td>{r.term}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+
+      {session.role === "teacher" && (
+        <Card><p style={{ fontSize: 14 }}>Welcome, <strong>{session.fullName}</strong>. Go to <em>Library</em> to send notes, past papers, books or videos to students, or <em>Quizzes</em> to build a quiz.</p></Card>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Library ---------------- */
+const LIB_TABS = [
+  { key: "notes", label: "Notes", icon: "file" }, { key: "pastpapers", label: "Past Papers", icon: "clipboard" },
+  { key: "books", label: "Books", icon: "book" }, { key: "videos", label: "Video Lessons", icon: "video" },
+  { key: "exams", label: "Exams", icon: "cap" }, { key: "resources", label: "Study Links", icon: "link" },
+];
+
+function LibraryPage({ session, library, refresh }) {
+  const [tab, setTab] = useState("notes");
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState(""); const [subject, setSubject] = useState("");
+  const [form, setForm] = useState("Form I"); const [link, setLink] = useState("");
+  const canContribute = session && (session.role === "teacher" || session.role === "admin");
+
+  async function addItem() {
+    if (!title || !link) return;
+    const current = library[tab] || [];
+    const updated = [{ title, subject, form, link, by: session.fullName, date: Date.now() }, ...current];
+    await db.collection("library").doc("content").set({ [tab]: updated }, { merge: true });
+    await refresh();
+    setTitle(""); setSubject(""); setLink(""); setShowForm(false);
+  }
+
+  if (tab === "resources") {
+    return (
+      <div>
+        <h2 style={{ fontSize: 22, marginBottom: 14 }}>Digital Library</h2>
+        <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+          {LIB_TABS.map(t => <button key={t.key} onClick={() => setTab(t.key)} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${tab === t.key ? PALETTE.navy : "#dde1e7"}`, background: tab === t.key ? PALETTE.navy : "#fff", color: tab === t.key ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Ic n={t.icon} size={13} /> {t.label}</button>)}
+        </div>
+        <p style={{ fontSize: 12.5, color: "#8a94a6", marginBottom: 14 }}>Official Tanzania & Zanzibar education resources aligned with the new TIE competence-based curriculum.</p>
+        <div style={{ display: "grid", gap: 10 }}>
+          {EXTERNAL_RESOURCES.map((r, i) => (
+            <Card key={i} style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, background: "#eef1f5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="link" size={17} /></div>
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 14.5, fontWeight: 600 }}>{r.title}</div><div style={{ fontSize: 12, color: "#8a94a6" }}>{r.desc}</div></div>
+              <a href={r.link} target="_blank" rel="noreferrer"><Button variant="gold" style={{ padding: "8px 14px" }}>Open</Button></a>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const items = library[tab] || [];
+  const tabDef = LIB_TABS.find(t => t.key === tab);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 14 }}>Digital Library</h2>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {LIB_TABS.map(t => <button key={t.key} onClick={() => { setTab(t.key); setShowForm(false); }} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${tab === t.key ? PALETTE.navy : "#dde1e7"}`, background: tab === t.key ? PALETTE.navy : "#fff", color: tab === t.key ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Ic n={t.icon} size={13} /> {t.label}</button>)}
+      </div>
+      {canContribute && (
+        <div style={{ marginBottom: 16 }}>
+          {!showForm ? <Button variant="teal" onClick={() => setShowForm(true)}><Ic n="plus" size={13} /> Add {tabDef.label}</Button> : (
+            <Card style={{ marginBottom: 10 }}>
+              <Field placeholder="Title (e.g. Physics Form III - Radiation)" value={title} onChange={e => setTitle(e.target.value)} />
+              <Field placeholder="Subject (e.g. Physics)" value={subject} onChange={e => setSubject(e.target.value)} />
+              <select value={form} onChange={e => setForm(e.target.value)} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 14, fontSize: 14.5 }}>{[...FORMS, "All Forms"].map(f => <option key={f}>{f}</option>)}</select>
+              <Field placeholder="Link (Google Drive / YouTube / URL)" value={link} onChange={e => setLink(e.target.value)} />
+              <div style={{ display: "flex", gap: 8 }}><Button onClick={addItem} variant="primary">Save</Button><Button variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button></div>
+            </Card>
+          )}
+        </div>
+      )}
+      {items.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>Nothing here yet. {canContribute ? "Add the first item!" : "Teachers will post content soon."}</p></Card> : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {items.map((it, i) => (
+            <Card key={i} style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, background: "#eef1f5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n={tabDef.icon} size={17} /></div>
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 14.5, fontWeight: 600 }}>{it.title}</div><div style={{ fontSize: 12, color: "#8a94a6" }}>{it.subject} {it.form ? `• ${it.form}` : ""} {it.by ? `• by ${it.by}` : ""}</div></div>
+              <a href={it.link} target="_blank" rel="noreferrer"><Button variant="gold" style={{ padding: "8px 14px" }}>Open</Button></a>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Quiz ---------------- */
+function QuizPage({ session, quizzes, leaderboard, refreshQuizzes, refreshLeaderboard }) {
+  const [active, setActive] = useState(null); const [answers, setAnswers] = useState({}); const [result, setResult] = useState(null);
+  const canCreate = session && (session.role === "teacher" || session.role === "admin");
+  const [showCreate, setShowCreate] = useState(false);
+  const [qTitle, setQTitle] = useState(""); const [qSubject, setQSubject] = useState("");
+  const [questions, setQuestions] = useState([{ q: "", options: ["", "", "", ""], answer: 0 }]);
+
+  function addQuestion() { setQuestions([...questions, { q: "", options: ["", "", "", ""], answer: 0 }]); }
+  function updateQ(i, field, val) { const qs = [...questions]; qs[i][field] = val; setQuestions(qs); }
+  function updateOpt(qi, oi, val) { const qs = [...questions]; qs[qi].options[oi] = val; setQuestions(qs); }
+
+  async function saveQuiz() {
+    if (!qTitle || questions.some(q => !q.q || q.options.some(o => !o))) return;
+    await db.collection("quizzes").add({ title: qTitle, subject: qSubject, questions, by: session.fullName, date: Date.now() });
+    await refreshQuizzes();
+    setQTitle(""); setQSubject(""); setQuestions([{ q: "", options: ["", "", "", ""], answer: 0 }]); setShowCreate(false);
+  }
+
+  function startQuiz(quiz) { setActive(quiz); setAnswers({}); setResult(null); }
+
+  async function submitQuiz() {
+    let score = 0;
+    active.questions.forEach((q, i) => { if (answers[i] === q.answer) score++; });
+    const points = score * 10;
+    setResult({ score, total: active.questions.length, points });
+    if (session && session.role === "student") {
+      const dKey = todayKey(), wKey = weekKey();
+      const ref = db.collection("leaderboard").doc(session.id);
+      const doc = await ref.get();
+      const prev = doc.exists ? doc.data() : { name: session.fullName, totalPoints: 0, dailyPoints: 0, dailyDate: dKey, weeklyPoints: 0, weekKey: wKey };
+      if (prev.dailyDate !== dKey) { prev.dailyPoints = 0; prev.dailyDate = dKey; }
+      if (prev.weekKey !== wKey) { prev.weeklyPoints = 0; prev.weekKey = wKey; }
+      prev.name = session.fullName;
+      prev.totalPoints = (prev.totalPoints || 0) + points;
+      prev.dailyPoints = (prev.dailyPoints || 0) + points;
+      prev.weeklyPoints = (prev.weeklyPoints || 0) + points;
+      await ref.set(prev);
+      await refreshLeaderboard();
+    }
+  }
+
+  const dailyTop = Object.entries(leaderboard).map(([id, v]) => ({ id, ...v })).filter(v => v.dailyDate === todayKey()).sort((a, b) => (b.dailyPoints || 0) - (a.dailyPoints || 0)).slice(0, 10);
+  const weeklyTop = Object.entries(leaderboard).map(([id, v]) => ({ id, ...v })).filter(v => v.weekKey === weekKey()).sort((a, b) => (b.weeklyPoints || 0) - (a.weeklyPoints || 0)).slice(0, 10);
+
+  if (active) {
+    return (
+      <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <Button variant="ghost" onClick={() => setActive(null)} style={{ marginBottom: 14 }}>← Back</Button>
+        <h2 style={{ fontSize: 20, marginBottom: 4 }}>{active.title}</h2>
+        <p style={{ fontSize: 12.5, color: "#8a94a6", marginBottom: 18 }}>{active.subject}</p>
+        {!result ? (
+          <>
+            {active.questions.map((q, i) => (
+              <Card key={i} style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 10 }}>{i + 1}. {q.q}</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {q.options.map((o, oi) => (
+                    <label key={oi} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${answers[i] === oi ? PALETTE.teal : "#e2e5ea"}`, background: answers[i] === oi ? "#eaf3fa" : "#fff", cursor: "pointer", fontSize: 13.5 }}>
+                      <input type="radio" name={`q${i}`} checked={answers[i] === oi} onChange={() => setAnswers({ ...answers, [i]: oi })} /> {o}
+                    </label>
+                  ))}
+                </div>
+              </Card>
+            ))}
+            <Button variant="primary" onClick={submitQuiz} style={{ width: "100%" }}>Submit Answers</Button>
+          </>
+        ) : (
+          <Card style={{ textAlign: "center", padding: 30 }}>
+            <div style={{ marginBottom: 10 }}><Ic n="star" size={34} /></div>
+            <h3 style={{ fontSize: 20 }}>You scored {result.score}/{result.total}</h3>
+            <p style={{ color: "#8a94a6", marginTop: 6 }}>+{result.points} points added</p>
+            <Button variant="primary" onClick={() => setActive(null)} style={{ marginTop: 16 }}>Back to Quizzes</Button>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 14 }}>Quizzes</h2>
+      {canCreate && (
+        <div style={{ marginBottom: 18 }}>
+          {!showCreate ? <Button variant="teal" onClick={() => setShowCreate(true)}><Ic n="plus" size={13} /> Create New Quiz</Button> : (
+            <Card>
+              <Field placeholder="Quiz title" value={qTitle} onChange={e => setQTitle(e.target.value)} />
+              <Field placeholder="Subject" value={qSubject} onChange={e => setQSubject(e.target.value)} />
+              {questions.map((q, qi) => (
+                <div key={qi} style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                  <Field placeholder={`Question ${qi + 1}`} value={q.q} onChange={e => updateQ(qi, "q", e.target.value)} />
+                  {q.options.map((o, oi) => (
+                    <div key={oi} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <input type="radio" checked={q.answer === oi} onChange={() => updateQ(qi, "answer", oi)} />
+                      <input value={o} onChange={e => updateOpt(qi, oi, e.target.value)} placeholder={`Option ${oi + 1}`} style={{ flex: 1, padding: 9, borderRadius: 6, border: "1px solid #d9dde4", fontSize: 13.5 }} />
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11.5, color: "#8a94a6" }}>Select the radio button of the correct answer</div>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}><Button variant="ghost" onClick={addQuestion}><Ic n="plus" size={12} /> Add Question</Button></div>
+              <div style={{ display: "flex", gap: 8 }}><Button onClick={saveQuiz} variant="primary">Save Quiz</Button><Button variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button></div>
+            </Card>
+          )}
+        </div>
+      )}
+      <div style={{ display: "grid", gap: 10, marginBottom: 26 }}>
+        {quizzes.length === 0 && <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No quizzes yet. {canCreate ? "Create the first one!" : "Teachers will add quizzes soon."}</p></Card>}
+        {quizzes.map(q => (
+          <Card key={q.id} style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ flex: 1 }}><div style={{ fontSize: 14.5, fontWeight: 600 }}>{q.title}</div><div style={{ fontSize: 12, color: "#8a94a6" }}>{q.subject} • {q.questions.length} questions</div></div>
+            <Button variant="gold" onClick={() => startQuiz(q)}>Start</Button>
+          </Card>
+        ))}
+      </div>
+      <div className="lb-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <LeaderboardCard title="Top 10 — Today" data={dailyTop} field="dailyPoints" />
+        <LeaderboardCard title="Top 10 — This Week" data={weeklyTop} field="weeklyPoints" />
+      </div>
+      <style>{`@media (max-width: 640px){ .lb-grid{ grid-template-columns: 1fr !important; } }`}</style>
+    </div>
+  );
+}
+function LeaderboardCard({ title, data, field }) {
+  return (
+    <Card>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><Ic n="trophy" size={15} /><h3 style={{ fontSize: 14.5 }}>{title}</h3></div>
+      {data.length === 0 ? <p style={{ fontSize: 12.5, color: "#8a94a6" }}>No scores yet.</p> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {data.map((u, i) => (<div key={u.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}><span style={{ width: 18, color: "#aaa", fontWeight: 700 }}>{i + 1}</span><span style={{ flex: 1 }}>{u.name}</span><Badge tone="gold">{u[field] || 0}</Badge></div>))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ---------------- News & Events ---------------- */
+function AnnouncementsPage({ session, announcements, refresh }) {
+  const [filter, setFilter] = useState("all"); const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState(""); const [category, setCategory] = useState("news");
+  const [body, setBody] = useState(""); const [eventDate, setEventDate] = useState(""); const [link, setLink] = useState("");
+  const canPost = session && (session.role === "teacher" || session.role === "admin");
+
+  async function postAnnouncement() {
+    if (!title || !body) return;
+    await db.collection("announcements").add({ title, category, body, eventDate: category === "event" ? eventDate : "", link, by: session.fullName, date: Date.now() });
+    await refresh();
+    setTitle(""); setBody(""); setEventDate(""); setLink(""); setShowForm(false);
+  }
+  async function deleteAnnouncement(id) { await db.collection("announcements").doc(id).delete(); await refresh(); }
+
+  const filtered = (announcements || []).filter(a => filter === "all" || a.category === filter);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 14 }}>News & Events</h2>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {[["all", "All"], ["news", "News"], ["event", "Events"]].map(([v, l]) => (
+          <button key={v} onClick={() => setFilter(v)} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${filter === v ? PALETTE.navy : "#dde1e7"}`, background: filter === v ? PALETTE.navy : "#fff", color: filter === v ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{l}</button>
+        ))}
+      </div>
+      {canPost && (
+        <div style={{ marginBottom: 18 }}>
+          {!showForm ? <Button variant="teal" onClick={() => setShowForm(true)}><Ic n="plus" size={13} /> Post News / Event</Button> : (
+            <Card style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                {[["news", "News"], ["event", "Event"]].map(([v, l]) => (<button key={v} onClick={() => setCategory(v)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, border: `1.5px solid ${category === v ? PALETTE.navy : "#dde1e7"}`, background: category === v ? PALETTE.navy : "#fff", color: category === v ? "#fff" : PALETTE.navy }}>{l}</button>))}
+              </div>
+              <Field placeholder="Title" value={title} onChange={e => setTitle(e.target.value)} />
+              {category === "event" && (<div style={{ marginBottom: 14 }}><label style={{ fontSize: 12, color: "#67707f", display: "block", marginBottom: 6 }}>Event date</label><input type="date" value={eventDate} onChange={e => setEventDate(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", fontSize: 14.5, fontFamily: "inherit" }} /></div>)}
+              <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="Details..." style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 14, fontFamily: "inherit", fontSize: 13.5 }} />
+              <Field placeholder="Optional link (e.g. poster image, Instagram post, form)" value={link} onChange={e => setLink(e.target.value)} />
+              <div style={{ display: "flex", gap: 8 }}><Button onClick={postAnnouncement} variant="primary">Post</Button><Button variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button></div>
+            </Card>
+          )}
+        </div>
+      )}
+      {filtered.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>Nothing posted yet.</p></Card> : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {filtered.map((a) => (
+            <Card key={a.id}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ display: "flex", gap: 10, flex: 1, minWidth: 0 }}>
+                  <Badge tone={a.category === "event" ? "teal" : "navy"}>{a.category === "event" ? "Event" : "News"}</Badge>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>{a.title}</div>
+                    <div style={{ fontSize: 11.5, color: "#8a94a6", marginTop: 2 }}>{a.category === "event" && a.eventDate ? `${a.eventDate} • ` : ""}Posted by {a.by} • {new Date(a.date).toLocaleDateString()}</div>
+                  </div>
+                </div>
+                {session?.role === "admin" && <button onClick={() => deleteAnnouncement(a.id)} style={{ background: "#fff", border: `1px solid ${PALETTE.coral}`, color: PALETTE.coral, borderRadius: 8, padding: "6px 8px", cursor: "pointer" }}><Ic n="trash" size={12} /></button>}
+              </div>
+              <p style={{ fontSize: 13.5, color: "#3a4353", marginTop: 10, lineHeight: 1.6 }}>{a.body}</p>
+              {a.link && <a href={a.link} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 8 }}><Button variant="gold" style={{ padding: "6px 12px", fontSize: 12.5 }}>Open Link</Button></a>}
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- About ---------------- */
+/* ---------------- Alumni & Scholarships ---------------- */
+function AlumniPage() {
+  const [tab, setTab] = useState("loans");
+  const tabs = [
+    { key: "loans", label: "Student Loans" },
+    { key: "scholarships", label: "Scholarships" },
+    { key: "universities", label: "University Admissions" },
+  ];
+  const items = ALUMNI_RESOURCES[tab];
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>Alumni & Scholarships</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 16 }}>Official resources for Lumumba graduates seeking loans, scholarships and university placement — for both Tanzania Mainland and Zanzibar.</p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {tabs.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${tab === t.key ? PALETTE.navy : "#dde1e7"}`, background: tab === t.key ? PALETTE.navy : "#fff", color: tab === t.key ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{t.label}</button>
+        ))}
+      </div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {items.map((r, i) => (
+          <Card key={i} style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 8, background: "#eef1f5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="link" size={17} /></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14.5, fontWeight: 600 }}>{r.title}</div>
+              <div style={{ fontSize: 12, color: "#8a94a6" }}>{r.desc}</div>
+            </div>
+            <a href={r.link} target="_blank" rel="noreferrer"><Button variant="gold" style={{ padding: "8px 14px" }}>Open</Button></a>
+          </Card>
+        ))}
+      </div>
+      <Card style={{ marginTop: 18, background: "#f4f8fc" }}>
+        <p style={{ fontSize: 12.5, color: "#67707f", lineHeight: 1.6 }}>
+          These are official third-party government and institutional websites — this portal only collects the links in one place to make them easier to find. Always apply directly on the official site linked above.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Projects Board ---------------- */
+function ProjectsPage({ session }) {
+  const [projects, setProjects] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState(""); const [desc, setDesc] = useState(""); const [status, setStatus] = useState("pending");
+  const canPost = session && (session.role === "teacher" || session.role === "admin");
+
+  const refresh = useCallback(async () => {
+    const snap = await db.collection("projects").orderBy("date", "desc").get();
+    setProjects(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function addProject() {
+    if (!title) return;
+    await db.collection("projects").add({ title, desc, status, by: session.fullName, date: Date.now() });
+    await refresh();
+    setTitle(""); setDesc(""); setStatus("pending"); setShowForm(false);
+  }
+  async function updateStatus(id, status) {
+    await db.collection("projects").doc(id).update({ status });
+    await refresh();
+  }
+
+  const statusTone = { pending: "coral", ongoing: "gold", completed: "teal" };
+  const statusLabel = { pending: "Pending", ongoing: "Ongoing", completed: "Completed" };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>School Projects</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 16 }}>Track school improvement and community projects — what's pending, what's ongoing, and what's been completed.</p>
+      {canPost && (
+        <div style={{ marginBottom: 18 }}>
+          {!showForm ? <Button variant="teal" onClick={() => setShowForm(true)}><Ic n="plus" size={13} /> Add Project</Button> : (
+            <Card style={{ marginBottom: 10 }}>
+              <Field placeholder="Project title" value={title} onChange={e => setTitle(e.target.value)} />
+              <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3} placeholder="Description..." style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 14, fontFamily: "inherit", fontSize: 13.5 }} />
+              <select value={status} onChange={e => setStatus(e.target.value)} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 14 }}>
+                <option value="pending">Pending — needs support/volunteers</option>
+                <option value="ongoing">Ongoing</option>
+                <option value="completed">Completed</option>
+              </select>
+              <div style={{ display: "flex", gap: 8 }}><Button onClick={addProject} variant="primary">Save</Button><Button variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button></div>
+            </Card>
+          )}
+        </div>
+      )}
+      {projects.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No projects posted yet.</p></Card> : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {projects.map(p => (
+            <Card key={p.id}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{p.title}</div>
+                  <div style={{ fontSize: 11.5, color: "#8a94a6", marginTop: 2 }}>By {p.by} • {new Date(p.date).toLocaleDateString()}</div>
+                </div>
+                <Badge tone={statusTone[p.status]}>{statusLabel[p.status]}</Badge>
+              </div>
+              {p.desc && <p style={{ fontSize: 13.5, color: "#3a4353", marginTop: 10, lineHeight: 1.6 }}>{p.desc}</p>}
+              {canPost && (
+                <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                  {["pending", "ongoing", "completed"].map(s => (
+                    <button key={s} onClick={() => updateStatus(p.id, s)} disabled={p.status === s} style={{ fontSize: 11.5, padding: "5px 10px", borderRadius: 14, border: `1px solid ${PALETTE.navy}`, background: p.status === s ? PALETTE.navy : "#fff", color: p.status === s ? "#fff" : PALETTE.navy, cursor: p.status === s ? "default" : "pointer", opacity: p.status === s ? 1 : 0.8 }}>{statusLabel[s]}</button>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Suggestion Box (private, to Admin) ---------------- */
+function SuggestionsPage({ session }) {
+  const [mine, setMine] = useState([]);
+  const [msg, setMsg] = useState("");
+  const [sent, setSent] = useState(false);
+  const isAdmin = session.role === "admin";
+  const [inbox, setInbox] = useState([]);
+
+  const refreshMine = useCallback(async () => {
+    const snap = await db.collection("suggestions").where("fromId", "==", session.id).orderBy("date", "desc").get();
+    setMine(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, [session.id]);
+  const refreshInbox = useCallback(async () => {
+    const snap = await db.collection("suggestions").orderBy("date", "desc").get();
+    setInbox(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, []);
+
+  useEffect(() => { if (isAdmin) refreshInbox(); else refreshMine(); }, [isAdmin, refreshInbox, refreshMine]);
+
+  async function send() {
+    if (!msg.trim()) return;
+    await db.collection("suggestions").add({
+      fromId: session.id, fromName: session.fullName, fromRole: session.role,
+      message: msg.trim(), date: Date.now(), read: false,
+    });
+    setMsg(""); setSent(true);
+    if (!isAdmin) await refreshMine();
+    setTimeout(() => setSent(false), 3000);
+  }
+  async function markRead(id) { await db.collection("suggestions").doc(id).update({ read: true }); await refreshInbox(); }
+
+  return (
+    <div style={{ maxWidth: 640, margin: "0 auto" }}>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>Suggestion Box</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 16 }}>
+        {isAdmin ? "Private messages sent to you by students and teachers." : "Send a private message directly to the Super Admin (President). Only the Admin can see this."}
+      </p>
+
+      {!isAdmin && (
+        <Card style={{ marginBottom: 18 }}>
+          {sent && <div style={{ padding: "9px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: "#dbeaf5", color: "#124a72" }}>Sent — the Admin will see this privately.</div>}
+          <textarea value={msg} onChange={e => setMsg(e.target.value)} rows={5} placeholder="Write your message to the President/Admin..." style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 14, fontFamily: "inherit", fontSize: 13.5 }} />
+          <Button onClick={send} variant="primary">Send Privately</Button>
+        </Card>
+      )}
+
+      {!isAdmin && (
+        <div>
+          <h3 style={{ fontSize: 15, marginBottom: 10 }}>My Messages</h3>
+          {mine.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>You haven't sent anything yet.</p></Card> : (
+            <div style={{ display: "grid", gap: 8 }}>
+              {mine.map(m => (
+                <Card key={m.id}>
+                  <p style={{ fontSize: 13.5, color: "#3a4353", lineHeight: 1.6 }}>{m.message}</p>
+                  <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 8 }}>{new Date(m.date).toLocaleString()} {m.read ? "• Seen by Admin" : "• Not yet seen"}</div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAdmin && (
+        <div>
+          {inbox.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No messages yet.</p></Card> : (
+            <div style={{ display: "grid", gap: 8 }}>
+              {inbox.map(m => (
+                <Card key={m.id} style={{ borderLeft: m.read ? "1px solid #eef0f3" : `3px solid ${PALETTE.navy}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{m.fromName} <Badge tone={m.fromRole === "teacher" ? "teal" : "navy"}>{m.fromRole}</Badge></div>
+                    {!m.read && <button onClick={() => markRead(m.id)} style={{ fontSize: 11, background: "none", border: "none", color: PALETTE.navy, cursor: "pointer" }}>Mark read</button>}
+                  </div>
+                  <p style={{ fontSize: 13.5, color: "#3a4353", lineHeight: 1.6 }}>{m.message}</p>
+                  <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 8 }}>{new Date(m.date).toLocaleString()}</div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Teacher Toolkit (Lesson Plan / Scheme / Assessment / Daily Record) ---------------- */
+function TeacherToolkitPage({ session }) {
+  const [kind, setKind] = useState("lesson");
+  const [values, setValues] = useState({});
+  const def = TEMPLATE_KINDS[kind];
+
+  function update(k, v) { setValues(prev => ({ ...prev, [k]: v })); }
+  function switchKind(k) { setKind(k); setValues({}); }
+  function printDoc() { window.print(); }
+
+  return (
+    <div style={{ maxWidth: 760, margin: "0 auto" }}>
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #printable-toolkit, #printable-toolkit * { visibility: visible; }
+          #printable-toolkit { position: absolute; left: 0; top: 0; width: 100%; padding: 20px; }
+        }
+      `}</style>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>Teacher Toolkit</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 16 }}>
+        Fill in the fields below in the official TIE (competence-based curriculum) format. When ready, print or save as PDF using your browser's print dialog.
+      </p>
+
+      <div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {Object.entries(TEMPLATE_KINDS).map(([k, v]) => (
+          <button key={k} onClick={() => switchKind(k)} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${kind === k ? PALETTE.navy : "#dde1e7"}`, background: kind === k ? PALETTE.navy : "#fff", color: kind === k ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{v.label}</button>
+        ))}
+      </div>
+
+      <Card>
+        <div id="printable-toolkit">
+          <h3 style={{ fontSize: 17, marginBottom: 4, textAlign: "center" }}>Lumumba Secondary School</h3>
+          <p style={{ fontSize: 12.5, color: "#8a94a6", textAlign: "center", marginBottom: 16 }}>{def.label}</p>
+          {def.fields.map(f => (
+            <div key={f.k} style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: "#67707f", display: "block", marginBottom: 6, fontWeight: 600 }}>{f.l}</label>
+              {f.area ? (
+                <textarea value={values[f.k] || ""} onChange={e => update(f.k, e.target.value)} rows={4}
+                  style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", fontFamily: "inherit", fontSize: 13.5 }} />
+              ) : (
+                <input type={f.type || "text"} value={values[f.k] || ""} onChange={e => update(f.k, e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box", padding: 11, borderRadius: 8, border: "1px solid #d9dde4", fontSize: 13.5, fontFamily: "inherit" }} />
+              )}
+            </div>
+          ))}
+          <p style={{ fontSize: 11, color: "#aab1bd", marginTop: 20, textAlign: "right" }}>Prepared by: {session.fullName}</p>
+        </div>
+      </Card>
+
+      <div className="no-print" style={{ marginTop: 16, display: "flex", gap: 8 }}>
+        <Button variant="primary" onClick={printDoc}><Ic n="file" size={13} /> Print / Save as PDF</Button>
+      </div>
+      <style>{`@media print { .no-print { display: none !important; } }`}</style>
+    </div>
+  );
+}
+
+/* ---------------- Attendance Log ---------------- */
+function AttendancePage({ session, monitorForm }) {
+  const isAdmin = session.role === "admin";
+  const [selectedForm, setSelectedForm] = useState(isAdmin ? FORMS[0] : monitorForm);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [entries, setEntries] = useState([]);
+  const [roster, setRoster] = useState([]);
+  const [view, setView] = useState("log"); // "log" or "report"
+
+  const level = levelOfForm(selectedForm);
+  const dayName = dayNameOf(date);
+  const numPeriods = periodsForDay(level, dayName);
+  const weekday = isWeekday(dayName);
+
+  const refreshEntries = useCallback(async () => {
+    const snap = await db.collection("attendance")
+      .where("form", "==", selectedForm).where("date", "==", date).get();
+    setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, [selectedForm, date]);
+
+  useEffect(() => { refreshEntries(); }, [refreshEntries]);
+
+  useEffect(() => {
+    (async () => {
+      const snap = await db.collection("users").where("role", "==", "student").where("form", "==", selectedForm).where("status", "==", "approved").get();
+      setRoster(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    })();
+  }, [selectedForm]);
+
+  async function savePeriod(periodNum, data) {
+    const existing = entries.find(e => e.period === periodNum);
+    const payload = {
+      form: selectedForm, level, date, day: dayName, period: periodNum,
+      subject: data.subject || "", teacherName: data.teacherName || "",
+      teacherPresent: weekday ? (data.teacherPresent ?? null) : null,
+      absentStudentIds: data.absentStudentIds || [],
+      note: data.note || "", loggedBy: session.fullName, loggedAt: Date.now(),
+    };
+    if (existing) await db.collection("attendance").doc(existing.id).set(payload);
+    else await db.collection("attendance").add(payload);
+    await refreshEntries();
+  }
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>Attendance Log</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 16 }}>
+        {isAdmin ? "View or log attendance for any class." : `You are the Class Monitor for ${monitorForm}.`}
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        <button onClick={() => setView("log")} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${view === "log" ? PALETTE.navy : "#dde1e7"}`, background: view === "log" ? PALETTE.navy : "#fff", color: view === "log" ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Log a Day</button>
+        <button onClick={() => setView("report")} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${view === "report" ? PALETTE.navy : "#dde1e7"}`, background: view === "report" ? PALETTE.navy : "#fff", color: view === "report" ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Weekly Report</button>
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          {isAdmin && (
+            <div>
+              <label style={{ fontSize: 11.5, color: "#67707f", display: "block", marginBottom: 4 }}>Class</label>
+              <select value={selectedForm} onChange={e => setSelectedForm(e.target.value)} style={{ padding: 10, borderRadius: 8, border: "1px solid #d9dde4" }}>
+                {FORMS.map(f => <option key={f}>{f}</option>)}
+              </select>
+            </div>
+          )}
+          {view === "log" && (
+            <div>
+              <label style={{ fontSize: 11.5, color: "#67707f", display: "block", marginBottom: 4 }}>Date</label>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ padding: 10, borderRadius: 8, border: "1px solid #d9dde4" }} />
+            </div>
+          )}
+          <Badge tone="navy">{level}</Badge>
+          {view === "log" && <Badge tone="teal">{dayName}</Badge>}
+        </div>
+      </Card>
+
+      {view === "log" ? (
+        numPeriods === 0 ? (
+          <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No periods scheduled — O-Level classes don't have lessons on {dayName}.</p></Card>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {Array.from({ length: numPeriods }, (_, i) => i + 1).map(p => (
+              <PeriodRow key={p} periodNum={p} weekday={weekday} roster={roster}
+                existing={entries.find(e => e.period === p)} onSave={data => savePeriod(p, data)} />
+            ))}
+          </div>
+        )
+      ) : (
+        <WeeklyReport form={selectedForm} />
+      )}
+    </div>
+  );
+}
+
+function PeriodRow({ periodNum, weekday, roster, existing, onSave }) {
+  const [subject, setSubject] = useState(existing?.subject || "");
+  const [teacherName, setTeacherName] = useState(existing?.teacherName || "");
+  const [teacherPresent, setTeacherPresent] = useState(existing?.teacherPresent ?? true);
+  const [absentIds, setAbsentIds] = useState(existing?.absentStudentIds || []);
+  const [note, setNote] = useState(existing?.note || "");
+  const [saved, setSaved] = useState(false);
+  const [expanded, setExpanded] = useState(!existing);
+
+  useEffect(() => {
+    setSubject(existing?.subject || ""); setTeacherName(existing?.teacherName || "");
+    setTeacherPresent(existing?.teacherPresent ?? true); setAbsentIds(existing?.absentStudentIds || []);
+    setNote(existing?.note || "");
+  }, [existing?.id]);
+
+  function toggleAbsent(id) {
+    setAbsentIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+  async function save() {
+    await onSave({ subject, teacherName, teacherPresent, absentStudentIds: absentIds, note });
+    setSaved(true); setExpanded(false);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
+        <div style={{ fontSize: 14.5, fontWeight: 600 }}>Period {periodNum} {subject && `— ${subject}`}</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {existing && weekday && <Badge tone={existing.teacherPresent ? "teal" : "coral"}>{existing.teacherPresent ? "Teacher present" : "Teacher absent"}</Badge>}
+          {existing && <Badge tone="navy">{(existing.absentStudentIds || []).length} absent</Badge>}
+          {saved && <Badge tone="teal">Saved</Badge>}
+        </div>
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 14, borderTop: "1px solid #f1efe8", paddingTop: 14 }}>
+          <Field placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} />
+          <Field placeholder="Teacher's name" value={teacherName} onChange={e => setTeacherName(e.target.value)} />
+          {weekday && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {[[true, "Teacher came"], [false, "Teacher absent"]].map(([v, l]) => (
+                <button key={l} onClick={() => setTeacherPresent(v)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontSize: 12.5, fontWeight: 600, border: `1.5px solid ${teacherPresent === v ? PALETTE.navy : "#dde1e7"}`, background: teacherPresent === v ? PALETTE.navy : "#fff", color: teacherPresent === v ? "#fff" : PALETTE.navy }}>{l}</button>
+              ))}
+            </div>
+          )}
+          <label style={{ fontSize: 12, color: "#67707f", display: "block", marginBottom: 6 }}>Absent students ({absentIds.length})</label>
+          <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid #eef0f3", borderRadius: 8, padding: 8, marginBottom: 14 }}>
+            {roster.length === 0 ? <p style={{ fontSize: 12, color: "#aab1bd" }}>No approved students in this class yet.</p> : roster.map(s => (
+              <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 4px", fontSize: 13 }}>
+                <input type="checkbox" checked={absentIds.includes(s.id)} onChange={() => toggleAbsent(s.id)} />
+                {s.fullName} <span style={{ color: "#aab1bd", fontSize: 11 }}>({s.regNumber})</span>
+              </label>
+            ))}
+          </div>
+          <Field placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} />
+          <Button variant="primary" onClick={save}>Save Period {periodNum}</Button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function WeeklyReport({ form }) {
+  const [range, setRange] = useState(() => {
+    const now = new Date();
+    const day = now.getDay();
+    const monday = new Date(now); monday.setDate(now.getDate() - ((day + 6) % 7));
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    return { start: monday.toISOString().slice(0, 10), end: sunday.toISOString().slice(0, 10) };
+  });
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const snap = await db.collection("attendance").where("form", "==", form)
+        .where("date", ">=", range.start).where("date", "<=", range.end).get();
+      setRows(snap.docs.map(d => d.data()));
+      setLoading(false);
+    })();
+  }, [form, range]);
+
+  const totalPeriods = rows.length;
+  const teacherAbsences = rows.filter(r => r.teacherPresent === false);
+  const teacherAbsenceBySubject = {};
+  teacherAbsences.forEach(r => { const k = r.subject || "Unknown"; teacherAbsenceBySubject[k] = (teacherAbsenceBySubject[k] || 0) + 1; });
+  const totalStudentAbsenceInstances = rows.reduce((sum, r) => sum + (r.absentStudentIds || []).length, 0);
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div><label style={{ fontSize: 11.5, color: "#67707f", display: "block", marginBottom: 4 }}>From</label><input type="date" value={range.start} onChange={e => setRange({ ...range, start: e.target.value })} style={{ padding: 9, borderRadius: 8, border: "1px solid #d9dde4" }} /></div>
+          <div><label style={{ fontSize: 11.5, color: "#67707f", display: "block", marginBottom: 4 }}>To</label><input type="date" value={range.end} onChange={e => setRange({ ...range, end: e.target.value })} style={{ padding: 9, borderRadius: 8, border: "1px solid #d9dde4" }} /></div>
+        </div>
+      </Card>
+      {loading ? <p style={{ fontSize: 13.5, color: "#8a94a6" }}>Loading report...</p> : (
+        <div style={{ display: "grid", gap: 12 }}>
+          <Card>
+            <h3 style={{ fontSize: 15, marginBottom: 10 }}>Summary — {form}</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div><div style={{ fontSize: 22, fontWeight: 700, color: PALETTE.navy }}>{totalPeriods}</div><div style={{ fontSize: 11.5, color: "#8a94a6" }}>Periods logged</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 700, color: PALETTE.coral }}>{teacherAbsences.length}</div><div style={{ fontSize: 11.5, color: "#8a94a6" }}>Periods with no teacher</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 700, color: PALETTE.teal }}>{totalStudentAbsenceInstances}</div><div style={{ fontSize: 11.5, color: "#8a94a6" }}>Total student-absences</div></div>
+            </div>
+          </Card>
+          {Object.keys(teacherAbsenceBySubject).length > 0 && (
+            <Card>
+              <h3 style={{ fontSize: 14.5, marginBottom: 10 }}>Missed periods by subject</h3>
+              <div style={{ display: "grid", gap: 6 }}>
+                {Object.entries(teacherAbsenceBySubject).sort((a, b) => b[1] - a[1]).map(([subj, count]) => (
+                  <div key={subj} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}><span>{subj}</span><Badge tone="coral">{count}</Badge></div>
+                ))}
+              </div>
+            </Card>
+          )}
+          {rows.length === 0 && <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No attendance logged for this period yet.</p></Card>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Polls ---------------- */
+function PollsPage({ session }) {
+  const [polls, setPolls] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState(["", ""]);
+  const canCreate = session.role === "admin" || session.role === "teacher";
+
+  const refresh = useCallback(async () => {
+    const snap = await db.collection("polls").orderBy("date", "desc").get();
+    setPolls(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  function updateOpt(i, v) { const o = [...options]; o[i] = v; setOptions(o); }
+  function addOpt() { setOptions([...options, ""]); }
+
+  async function createPoll() {
+    const clean = options.map(o => o.trim()).filter(Boolean);
+    if (!question.trim() || clean.length < 2) return;
+    await db.collection("polls").add({ question: question.trim(), options: clean, votes: {}, closed: false, by: session.fullName, date: Date.now() });
+    await refresh();
+    setQuestion(""); setOptions(["", ""]); setShowForm(false);
+  }
+  async function vote(poll, optIndex) {
+    if (poll.votes && poll.votes[session.id] !== undefined) return; // one vote per person
+    const votes = { ...(poll.votes || {}), [session.id]: optIndex };
+    await db.collection("polls").doc(poll.id).update({ votes });
+    await refresh();
+  }
+  async function closePoll(id) { await db.collection("polls").doc(id).update({ closed: true }); await refresh(); }
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>Polls</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 16 }}>Quick school-wide polls — results show live as people vote.</p>
+
+      {canCreate && (
+        <div style={{ marginBottom: 18 }}>
+          {!showForm ? <Button variant="teal" onClick={() => setShowForm(true)}><Ic n="plus" size={13} /> New Poll</Button> : (
+            <Card style={{ marginBottom: 10 }}>
+              <Field placeholder="Poll question" value={question} onChange={e => setQuestion(e.target.value)} />
+              {options.map((o, i) => (
+                <Field key={i} placeholder={`Option ${i + 1}`} value={o} onChange={e => updateOpt(i, e.target.value)} />
+              ))}
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}><Button variant="ghost" onClick={addOpt}><Ic n="plus" size={12} /> Add Option</Button></div>
+              <div style={{ display: "flex", gap: 8 }}><Button onClick={createPoll} variant="primary">Publish Poll</Button><Button variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button></div>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {polls.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No polls yet.</p></Card> : (
+        <div style={{ display: "grid", gap: 12 }}>
+          {polls.map(poll => {
+            const votes = poll.votes || {};
+            const total = Object.keys(votes).length;
+            const myVote = votes[session.id];
+            const counts = poll.options.map((_, i) => Object.values(votes).filter(v => v === i).length);
+            return (
+              <Card key={poll.id}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{poll.question}</div>
+                  {poll.closed && <Badge tone="coral">Closed</Badge>}
+                </div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {poll.options.map((opt, i) => {
+                    const pct = total > 0 ? Math.round((counts[i] / total) * 100) : 0;
+                    const isMine = myVote === i;
+                    return (
+                      <div key={i} onClick={() => !poll.closed && myVote === undefined && vote(poll, i)} style={{ cursor: (!poll.closed && myVote === undefined) ? "pointer" : "default", position: "relative", border: `1.5px solid ${isMine ? PALETTE.teal : "#e2e5ea"}`, borderRadius: 8, padding: "10px 12px", overflow: "hidden" }}>
+                        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${pct}%`, background: isMine ? "#dbeaf5" : "#f4f8fc", zIndex: 0 }} />
+                        <div style={{ position: "relative", zIndex: 1, display: "flex", justifyContent: "space-between", fontSize: 13.5 }}>
+                          <span>{opt} {isMine && "✓"}</span><span style={{ color: "#8a94a6" }}>{pct}% ({counts[i]})</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 10 }}>{total} vote{total !== 1 ? "s" : ""} • by {poll.by}
+                  {canCreate && !poll.closed && <button onClick={() => closePoll(poll.id)} style={{ marginLeft: 10, fontSize: 11, background: "none", border: "none", color: PALETTE.coral, cursor: "pointer" }}>Close poll</button>}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AboutPage({ info }) {
+  return (
+    <div style={{ maxWidth: 700, margin: "0 auto" }}>
+      <h2 style={{ fontSize: 22, marginBottom: 16 }}>About Lumumba Secondary School</h2>
+      <Card style={{ marginBottom: 14 }}><h3 style={{ fontSize: 15, marginBottom: 8 }}>Overview</h3><p style={{ fontSize: 14, lineHeight: 1.7, color: "#3a4353" }}>{info.about}</p></Card>
+      <Card style={{ marginBottom: 14 }}><h3 style={{ fontSize: 15, marginBottom: 8 }}>History</h3><p style={{ fontSize: 14, lineHeight: 1.7, color: "#3a4353" }}>{info.history}</p></Card>
+      <Card><h3 style={{ fontSize: 15, marginBottom: 8 }}>Contact</h3><p style={{ fontSize: 14, lineHeight: 1.7, color: "#3a4353" }}>{info.contacts}</p></Card>
+    </div>
+  );
+}
+
+/* ---------------- Admin ---------------- */
+function ClassMonitorsTab({ students }) {
+  const [monitors, setMonitors] = useState([]);
+  const [picks, setPicks] = useState({});
+  const [msg, setMsg] = useState(null);
+
+  const refresh = useCallback(async () => {
+    const snap = await db.collection("classMonitors").get();
+    setMonitors(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function assign(form) {
+    const studentId = picks[form];
+    if (!studentId) return;
+    const student = students.find(s => s.id === studentId);
+    if (!student) return;
+    await db.collection("classMonitors").doc(form).set({ form, studentId, studentName: student.fullName, assignedAt: Date.now() });
+    setMsg({ t: "ok", m: `${student.fullName} is now Class Monitor for ${form}.` });
+    await refresh();
+  }
+  async function remove(form) {
+    await db.collection("classMonitors").doc(form).delete();
+    await refresh();
+  }
+
+  return (
+    <div>
+      {msg && <div style={{ padding: "9px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: "#dbeaf5", color: "#124a72" }}>{msg.m}</div>}
+      <p style={{ fontSize: 12.5, color: "#8a94a6", marginBottom: 14 }}>Assign one Class Monitor per Form. A Class Monitor keeps all normal student access, plus the ability to log Attendance for their class.</p>
+      <div style={{ display: "grid", gap: 10 }}>
+        {FORMS.map(form => {
+          const current = monitors.find(m => m.form === form);
+          const formStudents = students.filter(s => s.form === form);
+          return (
+            <Card key={form}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: current ? 10 : 0 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 600 }}>{form}</div>
+                {current && <Badge tone="teal">Monitor: {current.studentName}</Badge>}
+              </div>
+              {current ? (
+                <Button variant="danger" onClick={() => remove(form)} style={{ padding: "6px 12px", fontSize: 12.5 }}>Remove Monitor</Button>
+              ) : (
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  <select value={picks[form] || ""} onChange={e => setPicks({ ...picks, [form]: e.target.value })} style={{ flex: 1, minWidth: 160, padding: 9, borderRadius: 8, border: "1px solid #d9dde4", fontSize: 13 }}>
+                    <option value="">-- Choose student --</option>
+                    {formStudents.map(s => <option key={s.id} value={s.id}>{s.fullName} ({s.regNumber})</option>)}
+                  </select>
+                  <Button variant="primary" onClick={() => assign(form)} style={{ padding: "8px 14px", fontSize: 12.5 }}>Assign</Button>
+                </div>
+              )}
+              {formStudents.length === 0 && !current && <p style={{ fontSize: 11.5, color: "#aab1bd", marginTop: 8 }}>No approved students in {form} yet.</p>}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AdminPage({ session, schoolInfo, setSchoolInfo }) {
+  const [tab, setTab] = useState("pending");
+  const [pending, setPending] = useState([]); const [approvedUsers, setApprovedUsers] = useState([]); const [loadingUsers, setLoadingUsers] = useState(false);
+  const [resStudentId, setResStudentId] = useState(""); const [resSubject, setResSubject] = useState(""); const [resMarks, setResMarks] = useState("");
+  const [resGrade, setResGrade] = useState("A"); const [resTerm, setResTerm] = useState("Term I"); const [resMsg, setResMsg] = useState(null);
+  const [aboutTxt, setAboutTxt] = useState(schoolInfo?.about || ""); const [historyTxt, setHistoryTxt] = useState(schoolInfo?.history || ""); const [contactsTxt, setContactsTxt] = useState(schoolInfo?.contacts || "");
+  const [rosterText, setRosterText] = useState(""); const [rosterCount, setRosterCount] = useState(0); const [rosterMsg, setRosterMsg] = useState(null);
+
+  const loadUsers = useCallback(async () => {
+    setLoadingUsers(true);
+    const snap = await db.collection("users").get();
+    const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    setPending(all.filter(u => u.status === "pending"));
+    setApprovedUsers(all.filter(u => u.status === "approved"));
+    setLoadingUsers(false);
+  }, []);
+  useEffect(() => {
+    loadUsers();
+    (async () => { const s = await db.collection("roster").get(); setRosterCount(s.size); })();
+  }, [loadUsers]);
+
+  async function setStatus(user, status) {
+    const updates = { status };
+    if (status === "approved" && !user.schoolEmail) {
+      const base = slugify(user.fullName).replace(/-/g, ".") || slugify(user.regNumber);
+      updates.schoolEmail = `${base}@lumumba.ac.tz`;
+    }
+    await db.collection("users").doc(user.id).update(updates);
+    await loadUsers();
+  }
+
+  async function submitResult() {
+    setResMsg(null);
+    if (!resStudentId || !resSubject || !resMarks) { setResMsg({ t: "err", m: "Fill in all fields." }); return; }
+    const ref = db.collection("results").doc(resStudentId);
+    const doc = await ref.get();
+    const items = doc.exists ? (doc.data().items || []) : [];
+    items.unshift({ subject: resSubject, marks: resMarks, grade: resGrade, term: resTerm, date: Date.now() });
+    await ref.set({ items });
+    setResMsg({ t: "ok", m: "Result saved. The student will see it on their dashboard." });
+    setResSubject(""); setResMarks("");
+  }
+
+  async function saveSchoolInfo() {
+    const info = { about: aboutTxt, history: historyTxt, contacts: contactsTxt };
+    await db.collection("meta").doc("schoolInfo").set(info);
+    setSchoolInfo(info);
+  }
+
+  async function saveRoster(mode) {
+    setRosterMsg(null);
+    const lines = rosterText.split("\n").map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) { setRosterMsg({ t: "err", m: "Paste at least one row first." }); return; }
+    if (mode === "replace") {
+      const existing = await db.collection("roster").get();
+      const batchDel = db.batch();
+      existing.docs.forEach(d => batchDel.delete(d.ref));
+      await batchDel.commit();
+    }
+    const batch = db.batch();
+    let count = 0;
+    for (const line of lines) {
+      const parts = line.split(",").map(p => p.trim());
+      if (parts.length < 3) continue;
+      const [fullName, regNumber, role, form] = parts;
+      if (!fullName || !regNumber || !["student", "teacher"].includes(role.toLowerCase())) continue;
+      const ref = db.collection("roster").doc();
+      batch.set(ref, { fullName, regNumber, role: role.toLowerCase(), form: form || "" });
+      count++;
+    }
+    if (count === 0) { setRosterMsg({ t: "err", m: "Could not read any valid rows. Use: Full Name, RegNumber, student/teacher, Form" }); return; }
+    await batch.commit();
+    const s = await db.collection("roster").get();
+    setRosterCount(s.size);
+    setRosterMsg({ t: "ok", m: `Saved. ${count} rows added (roster now has ${s.size} people).` });
+    setRosterText("");
+  }
+
+  const students = approvedUsers.filter(u => u.role === "student");
+  const tabs = [
+    { key: "pending", label: `Approvals (${pending.length})`, icon: "shield" }, { key: "users", label: "Users", icon: "user" },
+    { key: "roster", label: `Roster (${rosterCount})`, icon: "roster" }, { key: "monitors", label: "Class Monitors", icon: "star" },
+    { key: "results", label: "Results", icon: "award" },
+    { key: "info", label: "School Info", icon: "info" },
+  ];
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, marginBottom: 6 }}>Admin Panel</h2>
+      <p style={{ fontSize: 13, color: "#8a94a6", marginBottom: 18 }}>Logged in as <strong>Super Admin</strong> — {session.fullName}</p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {tabs.map(t => <button key={t.key} onClick={() => setTab(t.key)} style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${tab === t.key ? PALETTE.navy : "#dde1e7"}`, background: tab === t.key ? PALETTE.navy : "#fff", color: tab === t.key ? "#fff" : PALETTE.navy, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Ic n={t.icon} size={13} /> {t.label}</button>)}
+      </div>
+
+      {tab === "pending" && (
+        <div>
+          <p style={{ fontSize: 12, color: "#8a94a6", marginBottom: 12 }}>Approving someone issues them an official-looking school email for display (name@lumumba.ac.tz).</p>
+          {loadingUsers ? <p style={{ fontSize: 13.5, color: "#8a94a6" }}>Loading...</p> : pending.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No accounts awaiting approval right now.</p></Card> : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {pending.map(u => (
+                <Card key={u.id} style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 42, height: 42, borderRadius: "50%", overflow: "hidden", background: "#eee", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{u.photoURL ? <img src={u.photoURL} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Ic n="user" size={17} />}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{u.fullName}</div><div style={{ fontSize: 12, color: "#8a94a6" }}>{u.role === "student" ? "Student" : "Teacher"} • {u.regNumber} • {u.form}</div></div>
+                  <button onClick={() => setStatus(u, "approved")} style={{ background: PALETTE.teal, border: "none", color: "#fff", borderRadius: 8, padding: "8px 10px", cursor: "pointer" }}><Ic n="check" size={13} /></button>
+                  <button onClick={() => setStatus(u, "rejected")} style={{ background: "#fff", border: `1px solid ${PALETTE.coral}`, color: PALETTE.coral, borderRadius: 8, padding: "8px 10px", cursor: "pointer" }}><Ic n="x" size={13} /></button>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "users" && (
+        <div style={{ display: "grid", gap: 8 }}>
+          {approvedUsers.length === 0 ? <Card><p style={{ fontSize: 13.5, color: "#8a94a6" }}>No approved users yet.</p></Card> : approvedUsers.map(u => (
+            <Card key={u.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 36, height: 36, borderRadius: "50%", overflow: "hidden", background: "#eee", flexShrink: 0 }}>{u.photoURL && <img src={u.photoURL} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}</div>
+              <div style={{ flex: 1 }}><div style={{ fontSize: 13.5, fontWeight: 600 }}>{u.fullName}</div><div style={{ fontSize: 11.5, color: "#8a94a6" }}>{u.regNumber} • {u.schoolEmail || "school email pending"} • {u.phone || "—"}</div></div>
+              <Badge tone={u.role === "admin" ? "coral" : u.role === "teacher" ? "teal" : "navy"}>{u.role}</Badge>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {tab === "roster" && (
+        <Card>
+          <h3 style={{ fontSize: 15, marginBottom: 6 }}>Official Roster</h3>
+          <p style={{ fontSize: 12.5, color: "#8a94a6", marginBottom: 12 }}>Paste one person per line: <code>Full Name, Registration Number, student or teacher, Form</code><br />Example: <code>Amina Juma Ali, LSS-2026-0231, student, Form II</code></p>
+          {rosterMsg && <div style={{ padding: "9px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: rosterMsg.t === "ok" ? "#dbeaf5" : "#f6dedb", color: rosterMsg.t === "ok" ? "#124a72" : "#8f2f27" }}>{rosterMsg.m}</div>}
+          <textarea value={rosterText} onChange={e => setRosterText(e.target.value)} rows={8} placeholder={"Amina Juma Ali, LSS-2026-0231, student, Form II\nHassan Omar Khamis, TCH-014, teacher,"} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 12, fontFamily: "monospace", fontSize: 12.5 }} />
+          <div style={{ display: "flex", gap: 8 }}><Button variant="primary" onClick={() => saveRoster("append")}>Add to Roster</Button><Button variant="ghost" onClick={() => saveRoster("replace")}>Replace Whole Roster</Button></div>
+          <p style={{ fontSize: 11.5, color: "#8a94a6", marginTop: 10 }}>Current roster size: {rosterCount} people.</p>
+        </Card>
+      )}
+
+      {tab === "monitors" && <ClassMonitorsTab students={students} />}
+
+      {tab === "results" && (
+        <Card>
+          <h3 style={{ fontSize: 15, marginBottom: 12 }}>Submit / Add Results</h3>
+          {resMsg && <div style={{ padding: "9px 12px", borderRadius: 8, marginBottom: 12, fontSize: 13, background: resMsg.t === "ok" ? "#dbeaf5" : "#f6dedb", color: resMsg.t === "ok" ? "#124a72" : "#8f2f27" }}>{resMsg.m}</div>}
+          <select value={resStudentId} onChange={e => setResStudentId(e.target.value)} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginBottom: 14, fontSize: 14 }}>
+            <option value="">-- Select Student --</option>
+            {students.map(s => <option key={s.id} value={s.id}>{s.fullName} ({s.regNumber})</option>)}
+          </select>
+          <Field placeholder="Subject (e.g. Mathematics)" value={resSubject} onChange={e => setResSubject(e.target.value)} />
+          <Field placeholder="Marks (e.g. 78)" value={resMarks} onChange={e => setResMarks(e.target.value)} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            <select value={resGrade} onChange={e => setResGrade(e.target.value)} style={{ flex: 1, padding: 12, borderRadius: 8, border: "1px solid #d9dde4" }}>{["A", "B", "C", "D", "F"].map(g => <option key={g}>{g}</option>)}</select>
+            <select value={resTerm} onChange={e => setResTerm(e.target.value)} style={{ flex: 1, padding: 12, borderRadius: 8, border: "1px solid #d9dde4" }}>{["Term I", "Term II", "Annual Exam"].map(t => <option key={t}>{t}</option>)}</select>
+          </div>
+          <Button onClick={submitResult} variant="primary">Save Result</Button>
+        </Card>
+      )}
+
+      {tab === "info" && (
+        <Card>
+          <h3 style={{ fontSize: 15, marginBottom: 12 }}>Edit School Information</h3>
+          <label style={{ fontSize: 12, color: "#8a94a6" }}>Overview</label>
+          <textarea value={aboutTxt} onChange={e => setAboutTxt(e.target.value)} rows={4} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginTop: 6, marginBottom: 14, fontFamily: "inherit", fontSize: 13.5 }} />
+          <label style={{ fontSize: 12, color: "#8a94a6" }}>History</label>
+          <textarea value={historyTxt} onChange={e => setHistoryTxt(e.target.value)} rows={4} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginTop: 6, marginBottom: 14, fontFamily: "inherit", fontSize: 13.5 }} />
+          <label style={{ fontSize: 12, color: "#8a94a6" }}>Contact</label>
+          <textarea value={contactsTxt} onChange={e => setContactsTxt(e.target.value)} rows={2} style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #d9dde4", marginTop: 6, marginBottom: 14, fontFamily: "inherit", fontSize: 13.5 }} />
+          <Button onClick={saveSchoolInfo} variant="primary">Save Info</Button>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
